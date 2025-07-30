@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XD AI Assistent</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #000000; /* Zwarte achtergrond */
+            color: #FF0000; /* Rode tekst */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .container {
+            width: 100%;
+            max-width: 600px;
+            background-color: #1a1a1a; /* Iets lichtere zwarte tint voor container */
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 0 20px rgba(255, 0, 0, 0.5); /* Rode gloed */
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        .chat-history {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #8B0000; /* Donkerrood randje */
+            border-radius: 10px;
+            padding: 15px;
+            background-color: #0d0d0d; /* Nog donkerder voor chatgeschiedenis */
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .message {
+            padding: 10px 15px;
+            border-radius: 10px;
+            max-width: 80%;
+            word-wrap: break-word;
+        }
+        .user-message {
+            background-color: #330000; /* Donkerder rood voor gebruiker */
+            align-self: flex-end;
+            color: #FFCCCC; /* Lichtere rode tekst voor gebruiker */
+        }
+        .ai-message {
+            background-color: #220000; /* Donkerder rood voor AI */
+            align-self: flex-start;
+            color: #FF9999; /* Lichtere rode tekst voor AI */
+        }
+        .input-area {
+            display: flex;
+            gap: 10px;
+            align-items: center; /* Zorg dat items verticaal gecentreerd zijn */
+        }
+        .input-area input[type="text"] {
+            flex-grow: 1; /* Neemt beschikbare ruimte in beslag */
+            padding: 12px;
+            border-radius: 10px;
+            border: 1px solid #8B0000; /* Donkerrood randje */
+            background-color: #0d0d0d; /* Zelfde achtergrond als chatgeschiedenis */
+            color: #FF0000; /* Rode tekst */
+            outline: none; /* Verwijder standaard focus rand */
+        }
+        .input-area input[type="text"]::placeholder {
+            color: #8B0000; /* Lichtere rode placeholder tekst */
+        }
+        .input-area button {
+            background-color: #FF0000; /* Rode knop */
+            color: #FFFFFF; /* Witte tekst op knop */
+            padding: 12px 20px;
+            border-radius: 10px;
+            font-weight: bold;
+            transition: background-color 0.3s ease;
+            border: none;
+            cursor: pointer;
+        }
+        .input-area button:hover:not(:disabled) {
+            background-color: #CC0000; /* Donkerder rood bij hover */
+        }
+        .input-area button:disabled {
+            background-color: #550000; /* Grijze of donkerdere rode kleur als disabled */
+            cursor: not-allowed;
+        }
+        .loading-indicator {
+            text-align: center;
+            margin-top: 10px;
+            font-style: italic;
+            color: #FF8888; /* Lichtere rode kleur voor laadindicator */
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        .loading-indicator.pulsing {
+            animation: pulse 1.5s infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="text-3xl font-bold text-center mb-4">XD AI Assistent</h1>
+        <div id="chatHistory" class="chat-history">
+            <!-- Chatberichten komen hier -->
+        </div>
+        <div class="input-area">
+            <input type="text" id="textInput" placeholder="Typ je vraag hier...">
+            <button id="sendButton">Verstuur</button>
+            <button id="startButton">Spreek met XD</button>
+        </div>
+        <div id="loadingIndicator" class="loading-indicator hidden">
+            XD luistert...
+        </div>
+    </div>
+
+    
+
+    <script>
+        const startButton = document.getElementById('startButton');
+        const sendButton = document.getElementById('sendButton');
+        const textInput = document.getElementById('textInput');
+        const chatHistoryDiv = document.getElementById('chatHistory');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+
+        let chatHistory = [];
+        let recognition;
+        let isListening = false;
+        let audioContext; // Voor het afspelen van PCM-audio
+        let isSpeaking = false;
+
+        // Functie om base64 naar ArrayBuffer te converteren
+        function base64ToArrayBuffer(base64) {
+            const binaryString = atob(base64);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes.buffer;
+        }
+
+        // Functie om PCM naar WAV te converteren
+        function pcmToWav(pcmData, sampleRate) {
+            const numChannels = 1; // Mono
+            const bytesPerSample = 2; // Signed 16-bit PCM
+
+            const wavBuffer = new ArrayBuffer(44 + pcmData.byteLength);
+            const view = new DataView(wavBuffer);
+
+            // RIFF chunk descriptor
+            writeString(view, 0, 'RIFF');
+            view.setUint32(4, 36 + pcmData.byteLength, true);
+            writeString(view, 8, 'WAVE');
+
+            // FMT sub-chunk
+            writeString(view, 12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true); // AudioFormat: 1 = PCM
+            view.setUint16(22, numChannels, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * numChannels * bytesPerSample, true); // ByteRate
+            view.setUint16(32, numChannels * bytesPerSample, true); // BlockAlign
+            view.setUint16(34, 16, true); // BitsPerSample
+
+            // DATA sub-chunk
+            writeString(view, 36, 'data');
+            view.setUint32(40, pcmData.byteLength, true);
+
+            // Write PCM data
+            const pcmBytes = new Uint8Array(pcmData);
+            for (let i = 0; i < pcmBytes.length; i++) {
+                view.setUint8(44 + i, pcmBytes[i]);
+            }
+
+            return new Blob([wavBuffer], { type: 'audio/wav' });
+        }
+
+        function writeString(view, offset, string) {
+            for (let i = 0; i < string.length; i++) {
+                view.setUint8(offset + i, string.charCodeAt(i));
+            }
+        }
+
+        // Functie om bericht toe te voegen aan chatgeschiedenis
+        function addMessage(sender, text) {
+            const messageDiv = document.createElement('div');
+            messageDiv.classList.add('message');
+            if (sender === 'user') {
+                messageDiv.classList.add('user-message');
+                messageDiv.textContent = `Jij: ${text}`;
+            } else {
+                messageDiv.classList.add('ai-message');
+                messageDiv.textContent = `XD: ${text}`;
+            }
+            chatHistoryDiv.appendChild(messageDiv);
+            chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight; // Scroll naar beneden
+        }
+
+        // Functie om audio af te spelen
+        async function playAudio(audioData, mimeType) {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+
+            try {
+                const sampleRateMatch = mimeType.match(/rate=(\d+)/);
+                const sampleRate = sampleRateMatch ? parseInt(sampleRateMatch[1], 10) : 16000; // Standaard 16kHz
+
+                const pcmData = base64ToArrayBuffer(audioData);
+                const pcm16 = new Int16Array(pcmData); // PCM16 is signed
+
+                const wavBlob = pcmToWav(pcm16, sampleRate);
+                const audioUrl = URL.createObjectURL(wavBlob);
+
+                const audio = new Audio(audioUrl);
+                isSpeaking = true;
+                await audio.play();
+                isSpeaking = false;
+                URL.revokeObjectURL(audioUrl); // Ruim de URL op na het afspelen
+            } catch (error) {
+                console.error("Fout bij het afspelen van audio:", error);
+                isSpeaking = false;
+            }
+        }
+
+        // Functie om de Gemini API aan te roepen met exponentiële backoff
+        async function callGeminiAPI(userPrompt, retries = 0) {
+            const maxRetries = 5;
+            const delay = Math.pow(2, retries) * 1000; // 1s, 2s, 4s, 8s, 16s
+
+            let llmPrompt = userPrompt;
+            let specialFeature = null;
+
+            // Controleer op samenvattingsfunctie ✨
+            if (userPrompt.toLowerCase().startsWith('vat dit samen:')) {
+                llmPrompt = `Vat de volgende tekst samen: ${userPrompt.substring('vat dit samen:'.length).trim()}`;
+                specialFeature = 'summarize';
+            } else if (userPrompt.toLowerCase().startsWith('samenvatten:')) {
+                llmPrompt = `Vat de volgende tekst samen: ${userPrompt.substring('samenvatten:'.length).trim()}`;
+                specialFeature = 'summarize';
+            }
+            // Controleer op ideeëngenerator functie ✨
+            else if (userPrompt.toLowerCase().startsWith('genereer ideeën voor:')) {
+                llmPrompt = `Genereer creatieve ideeën voor: ${userPrompt.substring('genereer ideeën voor:'.length).trim()}`;
+                specialFeature = 'ideas';
+            } else if (userPrompt.toLowerCase().startsWith('ideeën voor:')) {
+                llmPrompt = `Genereer creatieve ideeën voor: ${userPrompt.substring('ideeën voor:'.length).trim()}`;
+                specialFeature = 'ideas';
+            }
+
+            // Voeg de huidige gebruikersprompt toe aan de chatgeschiedenis voor context
+            // Echter, voor de LLM roepen we de aangepaste prompt aan indien nodig
+            const currentChatHistory = [...chatHistory, { role: "user", parts: [{ text: llmPrompt }] }];
+
+            const payload = {
+                contents: currentChatHistory, // Stuur de aangepaste prompt als de laatste user-input
+                generationConfig: {
+                    responseModalities: ["TEXT", "AUDIO"],
+                    speechConfig: {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: { voiceName: "Kore" } // Een van de beschikbare stemmen
+                        }
+                    }
+                },
+                model: "gemini-2.5-flash-preview-tts"
+            };
+
+            const apiKey = "AIzaSyDhfHjc4ziZKtHS8zJkqMlbBcBUmiYIoNs"; // BELANGRIJK: Laat dit leeg. Canvas injecteert hier automatisch de API-sleutel.
+                               // Een 401-fout (Authenticatie mislukt) betekent meestal dat de API-sleutel
+                               // niet correct is ingesteld of niet de juiste machtigingen heeft in de omgeving.
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`;
+
+            try {
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    if (response.status === 429 && retries < maxRetries) {
+                        console.warn(`Rate limit overschreden, opnieuw proberen over ${delay / 1000} seconden...`);
+                        await new Promise(res => setTimeout(res, delay));
+                        return callGeminiAPI(userPrompt, retries + 1); // Gebruik de originele userPrompt voor retries
+                    } else if (response.status === 401) {
+                        throw new Error(`Authenticatie mislukt (401). Dit betekent dat de API-sleutel die door de omgeving wordt geleverd, ongeldig is of niet de benodigde machtigingen heeft. Controleer de API-sleutel in je Google Cloud Project en zorg ervoor dat de Gemini API is ingeschakeld.`);
+                    }
+                    throw new Error(`API-fout: ${response.status} ${response.statusText}`);
+                }
+
+                const result = await response.json();
+                console.log("Gemini API Response:", result);
+
+                if (result.candidates && result.candidates.length > 0 && result.candidates[0].content && result.candidates[0].content.parts && result.candidates[0].content.parts.length > 0) {
+                    const textPart = result.candidates[0].content.parts.find(p => p.text);
+                    const audioPart = result.candidates[0].content.parts.find(p => p.inlineData && p.inlineData.mimeType.startsWith("audio/"));
+
+                    const aiText = textPart ? textPart.text : "Geen tekst gevonden in antwoord.";
+                    const audioData = audioPart ? audioPart.inlineData.data : null;
+                    const audioMimeType = audioPart ? audioPart.inlineData.mimeType : null;
+
+                    // Voeg het AI-antwoord toe aan de chatgeschiedenis
+                    chatHistory.push({ role: "model", parts: [{ text: aiText }] });
+                    addMessage('ai', aiText);
+
+                    if (audioData && audioMimeType) {
+                        await playAudio(audioData, audioMimeType);
+                    }
+                } else {
+                    addMessage('ai', "Sorry, ik kon geen geldig antwoord genereren.");
+                }
+            } catch (error) {
+                console.error("Fout bij het aanroepen van de Gemini API:", error);
+                addMessage('ai', `Er is een fout opgetreden: ${error.message}. Probeer het later opnieuw.`);
+            } finally {
+                loadingIndicator.classList.add('hidden');
+                loadingIndicator.classList.remove('pulsing');
+                startButton.disabled = false;
+                sendButton.disabled = false; // Enable send button after response
+                textInput.disabled = false; // Enable text input after response
+            }
+        }
+
+        // Functie om de gebruikersinvoer te verwerken (zowel spraak als tekst)
+        function processUserInput(input) {
+            if (!input.trim()) {
+                addMessage('ai', 'Je hebt niets ingevoerd. Wat kan ik voor je doen?');
+                return;
+            }
+            loadingIndicator.textContent = 'XD denkt na...';
+            loadingIndicator.classList.remove('hidden');
+            loadingIndicator.classList.add('pulsing');
+            startButton.disabled = true;
+            sendButton.disabled = true; // Disable send button while processing
+            textInput.disabled = true; // Disable text input while processing
+            callGeminiAPI(input);
+        }
+
+
+        // Initialiseer spraakherkenning
+        if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
+            recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+            recognition.continuous = false; // Luister één keer per keer
+            recognition.lang = 'nl-NL'; // Nederlandse taal
+            recognition.interimResults = false; // Geef alleen definitieve resultaten
+
+            recognition.onstart = () => {
+                isListening = true;
+                startButton.textContent = 'Luistert...';
+                startButton.disabled = true;
+                sendButton.disabled = true; // Disable send button when listening
+                textInput.disabled = true; // Disable text input when listening
+                loadingIndicator.textContent = 'XD luistert...';
+                loadingIndicator.classList.remove('hidden');
+                loadingIndicator.classList.add('pulsing');
+            };
+
+            recognition.onresult = (event) => {
+                const transcript = event.results[0][0].transcript;
+                addMessage('user', transcript);
+                processUserInput(transcript);
+            };
+
+            recognition.onerror = (event) => {
+                console.error('Spraakherkenningsfout:', event.error);
+                loadingIndicator.textContent = 'Fout bij luisteren. Probeer opnieuw.';
+                loadingIndicator.classList.remove('pulsing');
+                startButton.disabled = false;
+                sendButton.disabled = false; // Enable send button on error
+                textInput.disabled = false; // Enable text input on error
+                startButton.textContent = 'Spreek met XD';
+                isListening = false;
+                if (event.error === 'not-allowed' || event.error === 'PermissionDeniedError') {
+                    addMessage('ai', 'Toegang tot microfoon geweigerd. Sta microfoon toe in je browserinstellingen.');
+                } else {
+                    addMessage('ai', 'Sorry, ik kon je niet goed verstaan. Kun je het herhalen?');
+                }
+            };
+
+            recognition.onend = () => {
+                isListening = false;
+                if (!loadingIndicator.classList.contains('hidden')) {
+                    // Als de loading indicator nog zichtbaar is, betekent dit dat de API-aanroep nog loopt
+                    // of dat er een fout is opgetreden die niet door de API-call is afgehandeld.
+                    // We laten de indicator dan staan totdat de API-call klaar is.
+                } else {
+                    startButton.textContent = 'Spreek met XD';
+                    startButton.disabled = false;
+                    sendButton.disabled = false; // Enable send button after speech ends if not already disabled by API call
+                    textInput.disabled = false; // Enable text input after speech ends
+                }
+            };
+
+        } else {
+            startButton.disabled = true;
+            startButton.textContent = 'Spraakherkenning niet ondersteund';
+            addMessage('ai', 'Je browser ondersteunt geen spraakherkenning. Probeer een andere browser (zoals Chrome).');
+        }
+
+        startButton.addEventListener('click', () => {
+            if (!isListening && !isSpeaking) {
+                try {
+                    recognition.start();
+                } catch (e) {
+                    console.error("Fout bij starten spraakherkenning:", e);
+                    loadingIndicator.textContent = 'Fout bij starten. Probeer opnieuw.';
+                    loadingIndicator.classList.remove('pulsing');
+                    startButton.disabled = false;
+                    sendButton.disabled = false;
+                    textInput.disabled = false;
+                    startButton.textContent = 'Spreek met XD';
+                }
+            } else if (isSpeaking) {
+                addMessage('ai', 'Ik ben nog bezig met praten. Wacht even...');
+            } else {
+                addMessage('ai', 'Ik luister al.');
+            }
+        });
+
+        // Event listener voor de "Verstuur" knop
+        sendButton.addEventListener('click', () => {
+            const inputText = textInput.value;
+            if (inputText.trim() !== '') {
+                addMessage('user', inputText);
+                processUserInput(inputText);
+                textInput.value = ''; // Leeg het invoerveld
+            } else {
+                addMessage('ai', 'Je hebt niets ingevoerd. Typ je vraag in het tekstveld.');
+            }
+        });
+
+        // Event listener voor Enter-toets in het tekstveld
+        textInput.addEventListener('keypress', (event) => {
+            if (event.key === 'Enter') {
+                sendButton.click(); // Activeer de verstuurknop
+            }
+        });
+
+        // Voeg een welkomstbericht toe bij het laden van de pagina
+        window.onload = () => {
+            addMessage('ai', 'Hallo! Ik ben XD, je persoonlijke AI-assistent. Hoe kan ik je vandaag helpen?');
+        };
+
+    </script>
+</body>
+</html>
